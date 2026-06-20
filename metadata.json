@@ -1,0 +1,7 @@
+{
+  "name": "FaceTrack HR",
+  "description": "A comprehensive attendance management system with face recognition, salary calculation, and leave management.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
