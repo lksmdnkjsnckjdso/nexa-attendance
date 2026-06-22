@@ -1,6 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import * as faceapi from 'face-api.js';
-import { MODEL_URL } from '../constants';
+import { initializeModels, isModelsLoaded, detectFace, DESCRIPTOR_SIZE } from '../services/faceRecognition';
 
 interface FaceScannerProps {
   onScan: (descriptor: Float32Array) => void | Promise<void>;
@@ -16,28 +15,20 @@ export const FaceScanner: React.FC<FaceScannerProps> = ({ onScan, isScanning, me
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scanningRef = useRef(false);
 
   useEffect(() => {
-    const loadModels = async () => {
+    const load = async () => {
       try {
-        await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-        ]);
+        await initializeModels();
         setModelsLoaded(true);
-      } catch (err) {
-        console.error("Failed to load face models", err);
-        setError("Failed to load face recognition models. Please check your internet connection.");
+      } catch (err: any) {
+        console.error("Failed to load models", err);
+        setError(err?.message || "Failed to load face recognition models");
       }
     };
-    loadModels();
-
-    return () => {
-      stopVideo();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load();
+    return () => { stopVideo(); };
   }, []);
 
   useEffect(() => {
@@ -46,11 +37,10 @@ export const FaceScanner: React.FC<FaceScannerProps> = ({ onScan, isScanning, me
     } else {
       stopVideo();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelsLoaded, isScanning]);
 
   const startVideo = () => {
-    navigator.mediaDevices.getUserMedia({ video: {} })
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } })
       .then((currentStream) => {
         streamRef.current = currentStream;
         if (videoRef.current) {
@@ -68,87 +58,72 @@ export const FaceScanner: React.FC<FaceScannerProps> = ({ onScan, isScanning, me
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+    scanningRef.current = false;
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
   };
 
-  const handleVideoPlay = async () => {
+  const handleVideoPlay = () => {
     if (!videoRef.current || !canvasRef.current || !modelsLoaded) return;
-
-    // Clear any existing interval to prevent duplicates
     if (intervalRef.current) clearInterval(intervalRef.current);
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
     const displaySize = {
-      width: video.videoWidth,
-      height: video.videoHeight
+      width: video.videoWidth || 640,
+      height: video.videoHeight || 480,
     };
-
-    // Check if dimensions are valid
     if (displaySize.width === 0 || displaySize.height === 0) return;
 
-    faceapi.matchDimensions(canvas, displaySize);
+    canvas.width = displaySize.width;
+    canvas.height = displaySize.height;
+
+    scanningRef.current = true;
 
     intervalRef.current = setInterval(async () => {
-      // Robust null checks inside the async interval
-      if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
-        return;
-      }
+      if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended || !scanningRef.current) return;
 
       try {
-        const detections = await faceapi.detectAllFaces(
-          videoRef.current,
-          new faceapi.TinyFaceDetectorOptions()
-        )
-          .withFaceLandmarks()
-          .withFaceDescriptors();
-
-        // Check if canvas still exists after await
+        const result = await detectFace(videoRef.current);
         if (!canvasRef.current) return;
 
-        const resizedDetections = faceapi.resizeResults(detections, displaySize);
+        const ctx = canvasRef.current.getContext('2d');
+        if (!ctx) return;
 
-        const currentCanvas = canvasRef.current;
-        const ctx = currentCanvas.getContext('2d');
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-        if (ctx) {
-          ctx.clearRect(0, 0, currentCanvas.width, currentCanvas.height);
-          faceapi.draw.drawDetections(currentCanvas, resizedDetections);
-        }
+        if (result && result.box.width > 60 && result.box.height > 60) {
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(result.box.x, result.box.y, result.box.width, result.box.height);
 
-        if (resizedDetections.length > 0) {
-          // Found a face, send the descriptor
-          // Find the face with the largest area (closest/most prominent)
-          const bestFace = resizedDetections.reduce((prev, current) => {
-            return (prev.detection.box.area > current.detection.box.area) ? prev : current;
-          });
-
-          // Stop scanning first to prevent duplicate calls
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-
-          try {
-            await onScan(bestFace.descriptor);
-          } catch (e) {
-            console.error("onScan error", e);
+          if (scanningRef.current) {
+            scanningRef.current = false;
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
+            }
+            try {
+              await onScan(result.descriptor);
+            } catch (e) {
+              console.error("onScan error", e);
+            }
           }
         }
       } catch (e) {
         console.error("Detection error", e);
       }
-    }, 500); // Check every 500ms
+    }, 500);
   };
 
-  // Fallback / Simulation mode for when models fail to load in restricted environments
   const handleSimulateScan = () => {
-    // Create a fake descriptor for testing
-    const fakeDescriptor = new Float32Array(128).fill(Math.random());
+    const fakeDescriptor = new Float32Array(DESCRIPTOR_SIZE);
+    for (let i = 0; i < DESCRIPTOR_SIZE; i++) {
+      fakeDescriptor[i] = Math.random();
+    }
     onScan(fakeDescriptor);
   };
 
@@ -177,7 +152,7 @@ export const FaceScanner: React.FC<FaceScannerProps> = ({ onScan, isScanning, me
           <div className="flex flex-col items-center justify-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
             <p className="text-gray-500">Loading AI Models...</p>
-            <p className="text-xs text-gray-400 mt-2">Connecting to GitHub...</p>
+            <p className="text-xs text-gray-400 mt-2">Downloading face detection models...</p>
           </div>
         ) : (
           <div className="relative bg-black rounded-lg overflow-hidden flex justify-center min-h-[300px]">
@@ -185,6 +160,7 @@ export const FaceScanner: React.FC<FaceScannerProps> = ({ onScan, isScanning, me
               ref={videoRef}
               autoPlay
               muted
+              playsInline
               onPlay={handleVideoPlay}
               className="w-full h-auto"
             />

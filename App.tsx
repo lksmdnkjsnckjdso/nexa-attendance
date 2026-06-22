@@ -4,9 +4,9 @@ import { StorageService } from './services/storage';
 import { FaceScanner } from './components/FaceScanner';
 import { Payslip } from './components/Payslip';
 import { Employee, AttendanceRecord, LeaveRequest, Settings, Holiday } from './types';
-import { ADMIN_CODE, DEFAULT_SETTINGS, formatCurrency } from './constants';
+import { ADMIN_CODE, DEFAULT_SETTINGS, FACE_MATCH_THRESHOLD, formatCurrency } from './constants';
 import { format, differenceInMinutes, parse, isSameDay, startOfMonth, endOfMonth } from 'date-fns';
-import * as faceapi from 'face-api.js';
+import { euclideanDistance } from './services/faceRecognition';
 import {
     Users, Calendar, Clock, DollarSign, LogOut, Plus, Trash2,
     CheckCircle, XCircle, FileText, UserCheck, Shield, Pencil, X, Mail, Lock, List, Loader2, AlertTriangle, Settings as SettingsIcon
@@ -436,11 +436,11 @@ const App: React.FC = () => {
 
     const handleFaceLogin = async (descriptor: Float32Array) => {
         try {
-            let bestMatch = { distance: 0.40, employee: null as Employee | null };
+            let bestMatch = { distance: FACE_MATCH_THRESHOLD, employee: null as Employee | null };
 
             employees.filter(e => e.isActive).forEach(emp => {
                 if (emp.faceDescriptor) {
-                    const distance = faceapi.euclideanDistance(descriptor, emp.faceDescriptor);
+                    const distance = euclideanDistance(descriptor, emp.faceDescriptor);
                     if (distance < bestMatch.distance) {
                         bestMatch = { distance, employee: emp };
                     }

@@ -43,9 +43,3 @@ export interface Holiday {
   name: string;
 }
 
-// Global window extension for face-api
-declare global {
-  interface Window {
-    faceapi: any;
-  }
-}
